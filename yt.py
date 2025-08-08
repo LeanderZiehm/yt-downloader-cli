@@ -12,11 +12,13 @@ import dotenv
 
 dotenv.load_dotenv()
 
+STORAGE_NAME = "syncthing"
+YT_DIR_NAME = "yt"
+
+BASE_DIR = os.path.join(os.path.expanduser("~"),STORAGE_NAME,YT_DIR_NAME)
+
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
-
-
 youtube = dis.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
-
 
 def joinPath(basePath, dir):
     return os.path.join(basePath, dir)
@@ -24,16 +26,11 @@ def joinPath(basePath, dir):
 def makeAbsolutePath(fileName):
     return os.path.join(os.path.dirname(os.path.realpath(__file__)), fileName)
 
-
-
-user_path = os.path.expanduser("~")
-nextcloudDowloadsPath = joinPath(user_path, "Nextcloud/Downloads")
-nextcloudMp3Mp4Path = joinPath(nextcloudDowloadsPath, "Downloads")
-linksDownloadPath = joinPath(nextcloudDowloadsPath, "DownloadFromLinks")
-linksFilePath = joinPath(nextcloudDowloadsPath, "links.txt")
-linksErrorFilePath = joinPath(nextcloudDowloadsPath, "linksError.txt")
-
-contentReferencePath = joinPath(user_path, "Nextcloud/#[ContentCreation]/References/Videos")
+downloads_base_path = BASE_DIR
+mp3_mp4_path = joinPath(downloads_base_path, "Downloads")
+links_download_path = joinPath(downloads_base_path, "DownloadFromLinks")
+links_file_path = joinPath(BASE_DIR, "links.txt")
+links_error_file_path = joinPath(BASE_DIR, "linksError.txt")
 saveToReferencePath = False
 
 downloadVideo = True
@@ -48,7 +45,7 @@ def printHelp():
     print("Send [1 or a] to download [audio]")
     print("Send [2 or v] to download [videos]")
     print("Send [m] to download [MAX RESOLUTION]")
-    print("Send [c] to change download path to [ContentReferencePath]")
+
     print("Send [i or here] to change download path to [CWD]")
     print("Send [o or od] to open download path")
     print("Send [l] to download links")
@@ -85,7 +82,7 @@ def open_file(file_path):
 
 def main(url=""):
     global downloadVideo
-    global nextcloudMp3Mp4Path
+    global mp3_mp4_path
     global saveToReferencePath
     global TARGET_RESOLUTION
 
@@ -106,11 +103,7 @@ def main(url=""):
             downloadPlaylist(url)
 
         elif "yout" in url:
-            downloadedfileName = downloadFromYoutube(url, nextcloudMp3Mp4Path)
-
-            if saveToReferencePath:
-                with open(joinPath(contentReferencePath, "ReferenceLinks"), "a") as f:
-                    f.write(f"\n{downloadedfileName} : {url} ")
+            downloadedfileName = downloadFromYoutube(url, mp3_mp4_path)
 
         endTime = time.time()
         print(f"[Downloading took {endTime - startTime} seconds]")
@@ -133,11 +126,10 @@ def main(url=""):
             MAX_RESOLUTION = True
             TARGET_RESOLUTION = "MAX"
 
-            nextcloudMp3Mp4Path = contentReferencePath
 
-            print(colorize("[DOWNLOAD PATH CHANGED]", DARK_GRAY), nextcloudMp3Mp4Path)
+            print(colorize("[DOWNLOAD PATH CHANGED]", DARK_GRAY), mp3_mp4_path)
 
-            os.makedirs(nextcloudMp3Mp4Path, exist_ok=True)
+            os.makedirs(mp3_mp4_path, exist_ok=True)
 
         elif url == "m":
             downloadVideo = True
@@ -146,20 +138,20 @@ def main(url=""):
             print(colorize("[DOWNLOAD MAX RESOLUTION]", DARK_GRAY))
 
         elif url == "openlinks" or url == "ol" or url == "l":
-            open_file(linksFilePath)
+            open_file(links_file_path)
 
         elif url == "downloadLinks" or "dl" in url:
             downloadLinks()
 
         elif url == "i" or url == "here"  or url == "h":
-            nextcloudMp3Mp4Path = os.getcwd()
-            print(colorize("[DOWNLOAD PATH CHANGED to CWD]", DARK_GRAY), nextcloudMp3Mp4Path)
+            mp3_mp4_path = os.getcwd()
+            print(colorize("[DOWNLOAD PATH CHANGED to CWD]", DARK_GRAY), mp3_mp4_path)
 
         elif url == "me" or "m" in url:
             open_file_explorer(os.getcwd())
 
         elif url == "open" or url == "o" or "od" in url:
-            open_file_explorer(nextcloudDowloadsPath)
+            open_file_explorer(downloads_base_path)
             print("[OPENED DOWNLOAD DIRECTORY]")
         elif url == "help":
             printHelp()
@@ -181,10 +173,10 @@ def hasWritePermissions():
 
 def downloadLinks():
     
-    os.makedirs(linksDownloadPath, exist_ok=True)
+    os.makedirs(links_download_path, exist_ok=True)
     
     try:
-        with open(linksFilePath) as file:
+        with open(links_file_path) as file:
             lines = file.readlines()
             lines = [line.rstrip() for line in lines]
         urls = lines
@@ -192,17 +184,17 @@ def downloadLinks():
         threads = []
         print(f"[Downloading {len(urls)} files]")
         for u in urls:
-            t = threading.Thread(target=downloadFromYoutube, args=(u, linksDownloadPath))
+            t = threading.Thread(target=downloadFromYoutube, args=(u, links_download_path))
             t.start()
             threads.append(t)
 
         for thread in threads:
             thread.join()
     except FileNotFoundError:
-        print(colorize(f"Links file not found at {linksFilePath}", RED))
-        with open(linksFilePath, "w") as f:
-            f.write("# Add YouTube links here, one per line\n")
-        print(f"Created empty links file at {linksFilePath}")
+        print(colorize(f"Links file not found at {links_file_path}", RED))
+        with open(links_file_path, "w") as f:
+            f.write("")
+        print(f"Created empty links file at {links_file_path}")
 
 def remove_illegal_path_characters(image_name):
     illegal_characters = r'[<>:"/\\|?*\x00-\x1F\x7F!]'
@@ -219,7 +211,7 @@ def downloadPlaylist(url):
     usablePlaylistName = remove_illegal_path_characters(playlist_name)
     usablePlaylistName = usablePlaylistName.encode("ascii", "ignore").decode("ascii")
     print(f"Playlist Name: {playlist_name}")
-    downloadPath = joinPath(nextcloudDowloadsPath, usablePlaylistName)
+    downloadPath = joinPath(downloads_base_path, usablePlaylistName)
     
     os.makedirs(downloadPath, exist_ok=True)
 
@@ -265,10 +257,10 @@ def getAllLinksFromPlaylist(playlistId):
 
     return links
 
-def downloadFromYoutube(url, nextcloudDowloadsPath=""):
+def downloadFromYoutube(url, downloads_base_path=""):
     try:
         
-        os.makedirs(nextcloudDowloadsPath, exist_ok=True)
+        os.makedirs(downloads_base_path, exist_ok=True)
 
         ytUrl = yt(url, use_oauth=True, allow_oauth_cache=True)
         streams = ytUrl.streams
@@ -288,20 +280,20 @@ def downloadFromYoutube(url, nextcloudDowloadsPath=""):
         fileName = file.default_filename[:-4] + extension
         fileName = fileName.encode("ascii", "ignore").decode("ascii")
         print(fileName)
-        file.download(nextcloudDowloadsPath, filename=fileName)
+        file.download(downloads_base_path, filename=fileName)
         return fileName
     except Exception as e:
         print(colorize(f"todo implement yt-dlp if age restricted [ERROR {e}] {url}", RED))
-        with open(linksErrorFilePath, "a") as f:
+        with open(links_error_file_path, "a") as f:
             f.write(f"{url}\n")
 
 if __name__ == "__main__":
     
-    for path in [nextcloudDowloadsPath, nextcloudMp3Mp4Path, linksDownloadPath, contentReferencePath]:
+    for path in [downloads_base_path, mp3_mp4_path, links_download_path]:
         os.makedirs(path, exist_ok=True)
     
-    if not os.path.exists(linksFilePath):
-        with open(linksFilePath, "w") as f:
+    if not os.path.exists(links_file_path):
+        with open(links_file_path, "w") as f:
             f.write("# Add YouTube links here, one per line\n")
 
     if len(sys.argv) > 1:
