@@ -141,7 +141,18 @@ def main(url=""):
             open_file(links_file_path)
 
         elif url == "downloadLinks" or "dl" in url:
-            downloadLinks()
+            # Ask for directory name
+            dir_name = input("Enter directory name to save downloads (leave empty for default): ").strip()
+            if dir_name == "":
+                target_path = links_download_path
+            else:
+                sanitized_dir_name = remove_illegal_path_characters(dir_name)
+                target_path = joinPath(links_download_path, sanitized_dir_name)
+                os.makedirs(target_path, exist_ok=True)
+            
+            # Use the target_path in downloadLinks function call
+            downloadLinks(target_path)
+
 
         elif url == "i" or url == "here"  or url == "h":
             mp3_mp4_path = os.getcwd()
@@ -171,10 +182,8 @@ def hasWritePermissions():
         print("Script does not have permission to save files in the current working directory")
         return False
 
-def downloadLinks():
-    
-    os.makedirs(links_download_path, exist_ok=True)
-    
+def downloadLinks(target_path=links_download_path):
+    os.makedirs(target_path, exist_ok=True)
     try:
         with open(links_file_path) as file:
             lines = file.readlines()
@@ -182,9 +191,9 @@ def downloadLinks():
         urls = lines
 
         threads = []
-        print(f"[Downloading {len(urls)} files]")
+        print(f"[Downloading {len(urls)} files to {target_path}]")
         for u in urls:
-            t = threading.Thread(target=downloadFromYoutube, args=(u, links_download_path))
+            t = threading.Thread(target=downloadFromYoutube, args=(u, target_path))
             t.start()
             threads.append(t)
 
