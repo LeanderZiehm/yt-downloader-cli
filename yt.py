@@ -182,23 +182,30 @@ def hasWritePermissions():
         print("Script does not have permission to save files in the current working directory")
         return False
 
+from tqdm import tqdm
+SYNC_DOWNLOADS = True
+
 def downloadLinks(target_path=links_download_path):
     os.makedirs(target_path, exist_ok=True)
     try:
         with open(links_file_path) as file:
             lines = file.readlines()
-            lines = [line.rstrip() for line in lines]
+            lines = [line.rstrip() for line in lines if line.strip() and not line.startswith("#")]
         urls = lines
 
-        threads = []
         print(f"[Downloading {len(urls)} files to {target_path}]")
-        for u in urls:
-            t = threading.Thread(target=downloadFromYoutube, args=(u, target_path))
-            t.start()
-            threads.append(t)
+        
+        if SYNC_DOWNLOADS:
+            for u in tqdm(urls, desc="Downloading videos", unit="video"):
+                downloadFromYoutube(u, target_path)
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                list(tqdm(executor.map(lambda u: downloadFromYoutube(u, target_path), urls),
+                          total=len(urls),
+                          desc="Downloading videos",
+                          unit="video"))
 
-        for thread in threads:
-            thread.join()
     except FileNotFoundError:
         print(colorize(f"Links file not found at {links_file_path}", RED))
         with open(links_file_path, "w") as f:
