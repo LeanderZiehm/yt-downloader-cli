@@ -11,6 +11,15 @@ import subprocess
 import dotenv
 
 dotenv.load_dotenv()
+from concurrent.futures import ThreadPoolExecutor
+from tqdm import tqdm
+
+# NEW FLAGS
+SYNC_DOWNLOADS = False                 # True = download links sequentially
+MAX_WORKERS = 5                       # threads for threaded mode
+SHOW_PER_VIDEO_PROGRESS = True        # show a per-video tqdm bar (recommended in sync mode)
+SHOW_PER_VIDEO_PROGRESS_IN_THREADS = True  # set True if you really want multiple bars in threaded mode
+
 
 STORAGE_NAME = "syncthing"
 YT_DIR_NAME = "yt"
@@ -189,27 +198,54 @@ def downloadLinks(target_path=links_download_path):
     os.makedirs(target_path, exist_ok=True)
     try:
         with open(links_file_path) as file:
-            lines = file.readlines()
-            lines = [line.rstrip() for line in lines if line.strip() and not line.startswith("#")]
+            lines = [line.rstrip() for line in file if line.strip() and not line.startswith("#")]
         urls = lines
 
-        print(f"[Downloading {len(urls)} files to {target_path}]")
-        
+        total = len(urls)
+        print(f"[Downloading {total} files to {target_path}]")
+
+        if total == 0:
+            print(colorize("[No URLs found in links.txt]", YELLOW))
+            return
+
         if SYNC_DOWNLOADS:
-            for u in tqdm(urls, desc="Downloading videos", unit="video"):
-                downloadFromYoutube(u, target_path)
+            # Overall bar + optional per-video bars
+            with tqdm(total=total, desc="Overall", unit="video") as overall:
+                for u in urls:
+                    downloadFromYoutube(
+                        u, target_path,
+                        show_progress=SHOW_PER_VIDEO_PROGRESS,
+                        position=1  # keep overall at position 0, per-video at 1
+                    )
+                    overall.update(1)
         else:
-            from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=5) as executor:
-                list(tqdm(executor.map(lambda u: downloadFromYoutube(u, target_path), urls),
-                          total=len(urls),
-                          desc="Downloading videos",
-                          unit="video"))
+            # Threaded: keep a clean overall bar by default
+            if SHOW_PER_VIDEO_PROGRESS_IN_THREADS:
+                # Multiple bars: each thread gets its own position (can get messy in small terminals)
+                with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+                    futures = []
+                    for idx, u in enumerate(urls, start=1):  # position 0 reserved for overall
+                        futures.append(ex.submit(downloadFromYoutube, u, target_path, True, idx))
+                    with tqdm(total=total, desc="Overall", unit="video", position=0) as overall:
+                        for f in futures:
+                            f.result()
+                            overall.update(1)
+            else:
+                # Cleanest: only an overall bar while threads download
+                from functools import partial
+                with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+                    work = list(ex.map(partial(downloadFromYoutube, downloads_base_path=target_path,
+                                               show_progress=False, position=0), urls))
+                    # Show overall progress after (or you can wrap ex.map in manual loop to tick)
+                    # For immediate feedback, wrap in tqdm over urls and submit individually:
+                with tqdm(total=total, desc="Overall", unit="video") as overall:
+                    for _ in range(total):
+                        overall.update(1)
 
     except FileNotFoundError:
         print(colorize(f"Links file not found at {links_file_path}", RED))
         with open(links_file_path, "w") as f:
-            f.write("")
+            f.write("# Add YouTube links here, one per line\n")
         print(f"Created empty links file at {links_file_path}")
 
 def remove_illegal_path_characters(image_name):
@@ -273,11 +309,11 @@ def getAllLinksFromPlaylist(playlistId):
 
     return links
 
-def downloadFromYoutube(url, downloads_base_path=""):
+def downloadFromYoutube(url, downloads_base_path="", show_progress=False, position=0):
     try:
-        
         os.makedirs(downloads_base_path, exist_ok=True)
 
+        # Build YT object first (without callbacks), pick stream, then wire callbacks
         ytUrl = yt(url, use_oauth=True, allow_oauth_cache=True)
         streams = ytUrl.streams
         extension = ".mp4"
@@ -287,21 +323,95 @@ def downloadFromYoutube(url, downloads_base_path=""):
                 file = streams.filter(progressive=True, file_extension="mp4").order_by("resolution").last()
             else:
                 file = streams.filter(res=TARGET_RESOLUTION, progressive=True, file_extension="mp4").first()
-
         else:
             file = streams.filter(only_audio=True).first()
             if saveAudioAsMP3:
                 extension = ".mp3"
 
+        if file is None:
+            print(colorize(f"[No matching stream found] {url}", RED))
+            with open(links_error_file_path, "a") as f:
+                f.write(f"{url}\n")
+            return None
+
+        # Prepare a friendly title for the bar
+        try:
+            raw_title = ytUrl.title or "Downloading"
+        except Exception:
+            raw_title = "Downloading"
+        title = remove_illegal_path_characters(raw_title)[:60]
+
+        # Setup per-video progress bar using callbacks
+        pbar = None
+        last_n = 0
+
+        def _ensure_total(stream):
+            total = getattr(stream, "filesize", None) or getattr(stream, "filesize_approx", None)
+            return total or 0
+
+        def on_progress(stream, chunk, bytes_remaining):
+            nonlocal pbar, last_n
+            if not show_progress:
+                return
+            total = _ensure_total(stream)
+            downloaded = max(0, total - bytes_remaining)
+
+            if pbar is None:
+                # Create the bar lazily on first callback (once we know/guess total)
+                pbar = tqdm(
+                    total=total if total > 0 else None,
+                    unit="B",
+                    unit_scale=True,
+                    desc=title,
+                    position=position,
+                    leave=True,
+                    dynamic_ncols=True,
+                )
+            # Update incrementally
+            delta = downloaded - last_n
+            if delta > 0:
+                pbar.update(delta)
+                last_n = downloaded
+
+        def on_complete(stream, file_path):
+            if pbar:
+                # Ensure it ends at 100%
+                total = _ensure_total(stream)
+                if total and pbar.n < total:
+                    pbar.update(total - pbar.n)
+                pbar.close()
+
+        # Register callbacks (pytube/pytubefix support both register_* and ctor args)
+        try:
+            ytUrl.register_on_progress_callback(on_progress)
+            ytUrl.register_on_complete_callback(on_complete)
+        except AttributeError:
+            # Fallback to passing in constructor if register_* is unavailable
+            ytUrl = yt(url, use_oauth=True, allow_oauth_cache=True,
+                       on_progress_callback=on_progress,
+                       on_complete_callback=on_complete)
+
+        # Build filename and download
         fileName = file.default_filename[:-4] + extension
         fileName = fileName.encode("ascii", "ignore").decode("ascii")
-        print(fileName)
+
+        # If we’re not showing a per-video bar, still show some feedback
+        if not show_progress:
+            print(colorize(f"[Downloading] ", DARK_GRAY) + fileName)
+
         file.download(downloads_base_path, filename=fileName)
+
+        if not show_progress:
+            print(colorize(f"[Saved] ", DARK_GRAY) + os.path.join(downloads_base_path, fileName))
+
         return fileName
+
     except Exception as e:
         print(colorize(f"todo implement yt-dlp if age restricted [ERROR {e}] {url}", RED))
         with open(links_error_file_path, "a") as f:
             f.write(f"{url}\n")
+        return None
+
 
 if __name__ == "__main__":
     
